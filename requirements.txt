@@ -1,0 +1,7 @@
+pandas
+seaborn
+matplotlib
+tqdm
+itertools
+rdkit
+pyarrow
