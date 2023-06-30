@@ -1,16 +1,25 @@
 # coding: utf-8
 
 import os
+import json
 import sqlite3
+from collections import defaultdict
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
-import pylab
+
+from rdkit import Chem
+from rdkit.Chem import MACCSkeys, rdReducedGraphs, RDKFingerprint, MolFromSmiles, Descriptors, Lipinski
+from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers
+
+from matplotlib import pylab
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from itertools import chain
 
 DATA_DIR = '../data'
 FIG_DIR = f'{DATA_DIR}/figures'
+
 
 def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
     """Find compounds that have been patented in previous years."""
@@ -87,7 +96,148 @@ def cross_references():
     chembl_df.to_parquet(f'{DATA_DIR}/chembl.pq.gzip', compression='gzip')
 
 
+def get_cmp_fingerprints():
+    """Get the different fingerprints for compounds."""
+
+    surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    surechembl_df['year'] = surechembl_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
+
+    # Drop duplicate entries
+    surechembl_df = surechembl_df.drop_duplicates(subset=["InChIKey", "year"], keep='first')
+
+    unique_compounds = surechembl_df.SMILES.unique()
+
+    fingerprint_dir = f'{DATA_DIR}/fingerprints'
+    os.makedirs(fingerprint_dir, exist_ok=True)
+
+    maccs_fingerprint_list = []
+    rdkit_fingerprint_list = []
+    erg_fingerprint_list = []
+
+    skipped_smiles = 0
+
+    for smiles in tqdm(unique_compounds, total=len(unique_compounds)):
+
+        try:
+            molecule = Chem.MolFromSmiles(smiles)
+            if molecule is None:
+                skipped_smiles += 1
+                continue
+
+            maccs_fingerprint_list.append({
+                'SMILES': smiles,
+                'fingerprint': MACCSkeys.GenMACCSKeys(molecule)
+            })
+            rdkit_fingerprint_list.append({
+                'SMILES': smiles,
+                'fingerprint': RDKFingerprint(molecule)
+            })
+            erg_fingerprint_list.append({
+                'SMILES': smiles,
+                'fingerprint': rdReducedGraphs.GetErGFingerprint(molecule)
+            })
+        except:
+            skipped_smiles += 1
+            continue
+
+    print(f'Skipped - {skipped_smiles}')
+
+    # Convert to dataframe
+    maccs_df = pd.DataFrame(maccs_fingerprint_list)
+    rdkit_df = pd.DataFrame(rdkit_fingerprint_list)
+    erg_df = pd.DataFrame(erg_fingerprint_list)
+
+    np.save(f'{fingerprint_dir}/all_maccs.npy', maccs_df.values)
+    np.save(f'{fingerprint_dir}/all_rdkit.npy', rdkit_df.values)
+    np.save(f'{fingerprint_dir}/all_erg.npy', erg_df.values)
+
+
+def get_properties():
+    """Get molecular properties from RDKit"""
+
+    surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    surechembl_df['year'] = surechembl_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
+
+    # Drop duplicate entries
+    surechembl_df = surechembl_df.drop_duplicates(subset=["InChIKey", "year"], keep='first')
+
+    unique_compounds = surechembl_df.SMILES.unique()
+
+    if os.path.exists(f'{DATA_DIR}/properties.json'):
+        with open(f'{DATA_DIR}/properties.json', 'r') as f:
+            smiles_to_property_dict = json.load(f)
+    else:
+        smiles_to_property_dict = defaultdict(dict)
+
+    c = 0
+
+    for counter, smiles in tqdm(enumerate(unique_compounds), total=len(unique_compounds)):
+
+        if smiles in smiles_to_property_dict:
+            continue
+
+        try:
+            molecule = MolFromSmiles(smiles)
+        except:
+            smiles_to_property_dict[smiles] = {
+                'mw': None,
+                'logp': None,
+                'n_hba': None,
+                'n_hbd': None,
+                'rot_bonds': None,
+                'tpsa': None,
+                'fsp3': None,
+                'n_chiral': None,
+            }
+            continue
+
+        try:
+            molecular_weight = Descriptors.ExactMolWt(molecule)
+        except:
+            smiles_to_property_dict[smiles] = {
+                'mw': None,
+                'logp': None,
+                'n_hba': None,
+                'n_hbd': None,
+                'rot_bonds': None,
+                'tpsa': None,
+                'fsp3': None,
+                'n_chiral': None,
+            }
+
+            continue
+
+        c += 1
+        logp = Descriptors.MolLogP(molecule)
+        n_hba = Descriptors.NumHAcceptors(molecule)
+        n_hbd = Descriptors.NumHDonors(molecule)
+        rotatable_bonds = Descriptors.NumRotatableBonds(molecule)
+        tpsa = Descriptors.TPSA(molecule)
+        fsp3 = Lipinski.FractionCSP3(molecule)
+        chiral_count = len(tuple(EnumerateStereoisomers(molecule)))
+
+        smiles_to_property_dict[smiles] = {
+            'mw': molecular_weight,
+            'logp': logp,
+            'n_hba': n_hba,
+            'n_hbd': n_hbd,
+            'rot_bonds': rotatable_bonds,
+            'tpsa': tpsa,
+            'fsp3': fsp3,
+            'n_chiral': chiral_count,
+        }
+
+        if c == 100:
+            with open(f'{DATA_DIR}/properties.json', 'w') as f:
+                json.dump(smiles_to_property_dict, f, ensure_ascii=False, indent=2)
+            c = 0
+
+    with open(f'{DATA_DIR}/properties.json', 'w') as f:
+        json.dump(smiles_to_property_dict, f, ensure_ascii=False, indent=2)
+
+
 """Venn diagram """
+
 
 def get_labels(data, fill="number"):
     
@@ -122,7 +272,7 @@ def get_labels(data, fill="number"):
     return labels
 
 
-def venn4(data=None, names=None, fill="number", show_names=True, **kwds):
+def venn4(data=None, names=None, fill="number", show_names=True, figsize: tuple=(10, 10)):
     
     """Formatting venn diagram text, name and orientation"""
 
@@ -135,11 +285,6 @@ def venn4(data=None, names=None, fill="number", show_names=True, **kwds):
         names = ("set 1", "set 2", "set 3", "set 4")
 
     labels = get_labels(data, fill=fill)
-
-    if 'figsize' in kwds and len(kwds['figsize']) == 2:
-        figsize = kwds['figsize']
-    else: 
-        figsize = (10, 10)
 
     fig = plt.figure(figsize=figsize)  
     ax = fig.gca()
@@ -187,7 +332,6 @@ def venn4(data=None, names=None, fill="number", show_names=True, **kwds):
         pylab.text(270, 275, names[2], fontsize=18, **alignment)
         pylab.text(130, 275, names[3], fontsize=18, **alignment)
 
-    
     pylab.tight_layout()
     pylab.savefig(f'{FIG_DIR}/figure_2.png', dpi=400)
     pylab.show()
