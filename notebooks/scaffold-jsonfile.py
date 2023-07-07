@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Import Modules
-
-# In[1]:
-
 
 import pandas as pd
 from tqdm import tqdm
@@ -19,27 +15,12 @@ from rdkit import RDLogger
 RDLogger.DisableLog('rdApp.*')
 
 
-# # Load Data File
-
-# In[ ]:
-
-
 surechem_df = pd.read_csv('data/EDA_df.txt.gz', sep='\t', compression='gzip')
-
-
-# In[ ]:
-
 
 surechem_df['year'] = surechem_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
 
 
-# In[ ]:
-
-
 surechem_df.head(2)
-
-
-# In[ ]:
 
 
 unique_inchi_df = surechem_df.drop_duplicates(subset=["InChIKey","year"], keep='first')
@@ -47,15 +28,7 @@ unique_inchi_df.reset_index(drop=True, inplace=True)
 len(unique_inchi_df)
 
 
-# In[ ]:
-
-
 smiles_df = unique_inchi_df[['SMILES', 'year', 'PATENT_ID' ]]
-
-
-# # Acquiring scaffold smiles or generic murkoscaffold smiles
-
-# In[ ]:
 
 
 scaffold_list = []
@@ -82,4 +55,8 @@ for smiles, year, patent_id in tqdm(smiles_df.values):
         continue
 
 skipped_smiles, len(scaffold_list)
-# # (44893, 21812332)
+(44893, 21812332)
+
+with open('data/scaffold_smiles.json', 'w') as f:
+    json.dump(scaffold_list, f, ensure_ascii=False, indent=2)
+
