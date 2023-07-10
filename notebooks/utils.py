@@ -20,6 +20,8 @@ from itertools import chain
 DATA_DIR = '../data'
 FIG_DIR = f'{DATA_DIR}/figures'
 
+tqdm.pandas()
+
 
 def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
     """Find compounds that have been patented in previous years."""
@@ -178,20 +180,6 @@ def get_properties():
 
         try:
             molecule = MolFromSmiles(smiles)
-        except:
-            smiles_to_property_dict[smiles] = {
-                'mw': None,
-                'logp': None,
-                'n_hba': None,
-                'n_hbd': None,
-                'rot_bonds': None,
-                'tpsa': None,
-                'fsp3': None,
-                'n_chiral': None,
-            }
-            continue
-
-        try:
             molecular_weight = Descriptors.ExactMolWt(molecule)
         except:
             smiles_to_property_dict[smiles] = {
@@ -204,7 +192,6 @@ def get_properties():
                 'fsp3': None,
                 'n_chiral': None,
             }
-
             continue
 
         c += 1
@@ -235,6 +222,40 @@ def get_properties():
     with open(f'{DATA_DIR}/properties.json', 'w') as f:
         json.dump(smiles_to_property_dict, f, ensure_ascii=False, indent=2)
 
+
+
+def get_scaffold():
+    """Get Murko scaffold for compounds in SureChEMBL."""
+    surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+
+    unique_compounds = surechembl_df.SMILES.unique()
+
+    if os.path.exists(f'{DATA_DIR}/scaffold_dump.json'):
+        scaffold_dict = json.load(open(f'{DATA_DIR}/scaffold_dump.json'))
+    else:
+        scaffold_dict = defaultdict(dict)
+
+    c = 0
+
+    for smiles in tqdm(unique_compounds):
+        if smiles in scaffold_dict:
+            continue
+        
+        c += 1
+
+        try:
+            generic_scaffold_smiles = Chem.MolToSmiles(
+                Chem.Scaffolds.MurckoScaffold.MakeScaffoldGeneric(Chem.MolFromSmiles(smiles))
+            ) 
+            scaffold_dict[smiles] = generic_scaffold_smiles            
+        except:
+            scaffold_dict[smiles] = None
+            continue
+
+    with open(f'{DATA_DIR}/scaffold_dump.json', 'w') as f:
+        json.dump(scaffold_dict, f, ensure_ascii=False, indent=2)
+    
+    return scaffold_dict
 
 """Venn diagram """
 
