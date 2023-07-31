@@ -1,9 +1,12 @@
 # coding: utf-8
 
 import os
+import logging
+import multiprocessing as mp
 import json
 import sqlite3
 from collections import defaultdict
+from typing import Iterable
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -19,6 +22,8 @@ from itertools import chain
 
 DATA_DIR = '../data'
 FIG_DIR = f'{DATA_DIR}/figures'
+
+logger = logging.getLogger(__name__)
 
 tqdm.pandas()
 
@@ -153,75 +158,94 @@ def get_cmp_fingerprints():
     np.save(f'{fingerprint_dir}/all_rdkit.npy', rdkit_df.values)
     np.save(f'{fingerprint_dir}/all_erg.npy', erg_df.values)
 
+"""Parallelization of compound properties calucation"""
+
+def _calcualte_props(smiles: str):
+    """Get molecular properties from RDKit"""
+    
+    try:
+        molecule = MolFromSmiles(smiles)
+    except:
+        return smiles, {
+            'mw': None,
+            'logp': None,
+            'n_hba': None,
+            'n_hbd': None,
+            'rot_bonds': None,
+            'tpsa': None,
+            'fsp3': None,
+            'n_chiral': None,
+        }
+
+    try:
+        molecular_weight = Descriptors.ExactMolWt(molecule)
+    except:
+        return smiles, {
+            'mw': None,
+            'logp': None,
+            'n_hba': None,
+            'n_hbd': None,
+            'rot_bonds': None,
+            'tpsa': None,
+            'fsp3': None,
+            'n_chiral': None,
+        }
+
+    logp = Descriptors.MolLogP(molecule)
+    n_hba = Descriptors.NumHAcceptors(molecule)
+    n_hbd = Descriptors.NumHDonors(molecule)
+    rotatable_bonds = Descriptors.NumRotatableBonds(molecule)
+    tpsa = Descriptors.TPSA(molecule)
+    fsp3 = Lipinski.FractionCSP3(molecule)
+    chiral_count = len(tuple(EnumerateStereoisomers(molecule)))
+
+    return smiles, {
+        'mw': molecular_weight,
+        'logp': logp,
+        'n_hba': n_hba,
+        'n_hbd': n_hbd,
+        'rot_bonds': rotatable_bonds,
+        'tpsa': tpsa,
+        'fsp3': fsp3,
+        'n_chiral': chiral_count,
+    }
+
 
 def get_properties():
-    """Get molecular properties from RDKit"""
+    pool = mp.Pool(10)  # We have 24 cores on our linux machine
 
     surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    logger.warning(f'Loading data')
     surechembl_df['year'] = surechembl_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
+    logger.warning(f'Loading completed')
 
     # Drop duplicate entries
     surechembl_df = surechembl_df.drop_duplicates(subset=["InChIKey", "year"], keep='first')
 
-    unique_compounds = surechembl_df.SMILES.unique()
+    global smiles_to_property_dict
 
-    if os.path.exists(f'{DATA_DIR}/properties.json'):
-        with open(f'{DATA_DIR}/properties.json', 'r') as f:
-            smiles_to_property_dict = json.load(f)
-    else:
-        smiles_to_property_dict = defaultdict(dict)
+    smiles_to_property_dict = defaultdict(dict)
 
-    c = 0
+    filtered_surechembl_df = surechembl_df[~surechembl_df.SMILES.isin(smiles_to_property_dict)]
 
-    for counter, smiles in tqdm(enumerate(unique_compounds), total=len(unique_compounds)):
+    unique_compounds = filtered_surechembl_df.SMILES.unique().tolist()
+    
+    results = []
 
-        if smiles in smiles_to_property_dict:
-            continue
-
-        try:
-            molecule = MolFromSmiles(smiles)
-            molecular_weight = Descriptors.ExactMolWt(molecule)
-        except:
-            smiles_to_property_dict[smiles] = {
-                'mw': None,
-                'logp': None,
-                'n_hba': None,
-                'n_hbd': None,
-                'rot_bonds': None,
-                'tpsa': None,
-                'fsp3': None,
-                'n_chiral': None,
-            }
-            continue
-
-        c += 1
-        logp = Descriptors.MolLogP(molecule)
-        n_hba = Descriptors.NumHAcceptors(molecule)
-        n_hbd = Descriptors.NumHDonors(molecule)
-        rotatable_bonds = Descriptors.NumRotatableBonds(molecule)
-        tpsa = Descriptors.TPSA(molecule)
-        fsp3 = Lipinski.FractionCSP3(molecule)
-        chiral_count = len(tuple(EnumerateStereoisomers(molecule)))
-
-        smiles_to_property_dict[smiles] = {
-            'mw': molecular_weight,
-            'logp': logp,
-            'n_hba': n_hba,
-            'n_hbd': n_hbd,
-            'rot_bonds': rotatable_bonds,
-            'tpsa': tpsa,
-            'fsp3': fsp3,
-            'n_chiral': chiral_count,
-        }
-
-        if c == 100:
-            with open(f'{DATA_DIR}/properties.json', 'w') as f:
-                json.dump(smiles_to_property_dict, f, ensure_ascii=False, indent=2)
-            c = 0
-
+    # Parallelize the process
+    for row in tqdm(unique_compounds, total=len(unique_compounds), desc='Extracting molecular properties'):
+        results.append(pool.apply_async(_calcualte_props, args=(row,)))
+    
+    pool.close()
+    pool.join()
+    
+    for res in results:
+        result = res.get()
+        smiles_to_property_dict[result[0]] = result[1]
+    
+    
     with open(f'{DATA_DIR}/properties.json', 'w') as f:
         json.dump(smiles_to_property_dict, f, ensure_ascii=False, indent=2)
-
 
 
 def get_scaffold():
