@@ -102,61 +102,60 @@ def cross_references():
     chembl_df = chembl_df[chembl_df['inchikey'].isin(inchikeys_of_interest)]
     chembl_df.to_parquet(f'{DATA_DIR}/chembl.pq.gzip', compression='gzip')
 
+"""Parallelization of compound fingerprint calucation"""
 
-def get_cmp_fingerprints():
+def _calculate_fingerprints(smiles: str):
     """Get the different fingerprints for compounds."""
 
+    try:
+        molecule = Chem.MolFromSmiles(smiles)
+    except:
+        return smiles, {'maccs': None, 'rdkit': None, 'erg': None}
+    
+    if molecule is None:
+        return smiles, {'maccs': None, 'rdkit': None, 'erg': None}
+
+    maccs = MACCSkeys.GenMACCSKeys(molecule).ToBitString()
+    rdkit = RDKFingerprint(molecule).ToBitString()
+    erg = rdReducedGraphs.GetErGFingerprint(molecule).ToBitString()
+
+    return smiles, {'maccs': maccs, 'rdkit': rdkit, 'erg': erg}
+
+
+def get_fingerprints():
+    pool = mp.Pool(10)  # We have 24 cores on our linux machine
+
     surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    logger.warning(f'Loading data')
     surechembl_df['year'] = surechembl_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
+    logger.warning(f'Loading completed')
 
     # Drop duplicate entries
     surechembl_df = surechembl_df.drop_duplicates(subset=["InChIKey", "year"], keep='first')
 
-    unique_compounds = surechembl_df.SMILES.unique()
+    global smiles_to_fingerprint_dict
 
-    fingerprint_dir = f'{DATA_DIR}/fingerprints'
-    os.makedirs(fingerprint_dir, exist_ok=True)
+    smiles_to_fingerprint_dict = defaultdict(dict)
 
-    maccs_fingerprint_list = []
-    rdkit_fingerprint_list = []
-    erg_fingerprint_list = []
+    unique_compounds = surechembl_df.SMILES.unique().tolist()
+    
+    results = []
 
-    skipped_smiles = 0
+    # Parallelize the process
+    for row in tqdm(unique_compounds, total=len(unique_compounds), desc='Extracting molecular properties'):
+        results.append(pool.apply_async(_calculate_fingerprints, args=(row,)))
+    
+    pool.close()
+    pool.join()
+    
+    for res in results:
+        result = res.get()
+        smiles_to_fingerprint_dict[result[0]] = result[1]
+    
+    
+    with open(f'{DATA_DIR}/fingerprint.json', 'w') as f:
+        json.dump(smiles_to_fingerprint_dict, f, ensure_ascii=False, indent=2)
 
-    for smiles in tqdm(unique_compounds, total=len(unique_compounds)):
-
-        try:
-            molecule = Chem.MolFromSmiles(smiles)
-            if molecule is None:
-                skipped_smiles += 1
-                continue
-
-            maccs_fingerprint_list.append({
-                'SMILES': smiles,
-                'fingerprint': MACCSkeys.GenMACCSKeys(molecule)
-            })
-            rdkit_fingerprint_list.append({
-                'SMILES': smiles,
-                'fingerprint': RDKFingerprint(molecule)
-            })
-            erg_fingerprint_list.append({
-                'SMILES': smiles,
-                'fingerprint': rdReducedGraphs.GetErGFingerprint(molecule)
-            })
-        except:
-            skipped_smiles += 1
-            continue
-
-    print(f'Skipped - {skipped_smiles}')
-
-    # Convert to dataframe
-    maccs_df = pd.DataFrame(maccs_fingerprint_list)
-    rdkit_df = pd.DataFrame(rdkit_fingerprint_list)
-    erg_df = pd.DataFrame(erg_fingerprint_list)
-
-    np.save(f'{fingerprint_dir}/all_maccs.npy', maccs_df.values)
-    np.save(f'{fingerprint_dir}/all_rdkit.npy', rdkit_df.values)
-    np.save(f'{fingerprint_dir}/all_erg.npy', erg_df.values)
 
 """Parallelization of compound properties calucation"""
 
@@ -226,9 +225,7 @@ def get_properties():
 
     smiles_to_property_dict = defaultdict(dict)
 
-    filtered_surechembl_df = surechembl_df[~surechembl_df.SMILES.isin(smiles_to_property_dict)]
-
-    unique_compounds = filtered_surechembl_df.SMILES.unique().tolist()
+    unique_compounds = surechembl_df.SMILES.unique().tolist()
     
     results = []
 
@@ -252,29 +249,46 @@ def get_scaffold():
     """Get Murko scaffold for compounds in SureChEMBL."""
     surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
 
-    unique_compounds = surechembl_df.SMILES.unique()
+    unique_compounds = set(surechembl_df.SMILES.unique())
 
     if os.path.exists(f'{DATA_DIR}/scaffold_dump.json'):
         scaffold_dict = json.load(open(f'{DATA_DIR}/scaffold_dump.json'))
     else:
-        scaffold_dict = defaultdict(dict)
+        scaffold_dict = defaultdict(str)
 
     c = 0
+    skipped_smiles = 0
+
+    # Remove compounds that have already been processed
+    unique_compounds = unique_compounds - set(scaffold_dict.keys())
 
     for smiles in tqdm(unique_compounds):
         if smiles in scaffold_dict:
             continue
+
+        molecule = MolFromSmiles(smiles)
+        
+        if molecule is None:
+            scaffold_dict[smiles] = None
+            skipped_smiles += 1
+            continue
+        
+        try:
+            generic_scaffold_smiles = Chem.MolToSmiles(GetScaffoldForMol(molecule)) 
+            scaffold_dict[smiles] = generic_scaffold_smiles   
+        except Chem.rdchem.AtomValenceException:
+            scaffold_dict[smiles] = None
+            skipped_smiles += 1
+            continue      
         
         c += 1
 
-        try:
-            generic_scaffold_smiles = Chem.MolToSmiles(
-                Chem.Scaffolds.MurckoScaffold.MakeScaffoldGeneric(Chem.MolFromSmiles(smiles))
-            ) 
-            scaffold_dict[smiles] = generic_scaffold_smiles            
-        except:
-            scaffold_dict[smiles] = None
-            continue
+        if c == 50:
+            with open(f'{DATA_DIR}/scaffold_dump.json', 'w') as f:
+                json.dump(scaffold_dict, f, ensure_ascii=False, indent=2)   
+            c = 0
+
+    print(f'Skipped - {skipped_smiles}')
 
     with open(f'{DATA_DIR}/scaffold_dump.json', 'w') as f:
         json.dump(scaffold_dict, f, ensure_ascii=False, indent=2)
