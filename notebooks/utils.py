@@ -20,8 +20,12 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from itertools import chain
 
-DATA_DIR = '../data'
-FIG_DIR = f'{DATA_DIR}/figures'
+RAW_DIR = '../data/raw'
+MAPPING_DIR = '../data/mappings'
+PROCESSED_DIR = '../data/processed'
+FIG_DIR = '../data/figures'
+
+os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +35,8 @@ tqdm.pandas()
 def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
     """Find compounds that have been patented in previous years."""
 
-    if os.path.exists(f'{DATA_DIR}/repeated_compound.tsv'):
-        return pd.read_csv(f'{DATA_DIR}repeated_compound.tsv', sep='\t')
+    if os.path.exists(f'{PROCESSED_DIR}/repeated_compound.tsv'):
+        return pd.read_csv(f'{PROCESSED_DIR}/repeated_compound.tsv', sep='\t')
 
     df = data_df.drop_duplicates(subset=["InChIKey", "year"], keep='first')
     year_range = df['year'].unique().tolist()
@@ -64,24 +68,24 @@ def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
         })
         
     c = pd.DataFrame(count)
-    c.to_csv(f'{DATA_DIR}/repeated_compound.tsv', sep='\t', index=False)
+    c.to_csv(f'{PROCESSED_DIR}/repeated_compound.tsv', sep='\t', index=False)
     return c
 
 
 def cross_references():
     """Get external references (pubchem and chembl ids) for surechembl compounds."""
 
-    surechem_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    surechem_df = pd.read_parquet(f'{RAW_DIR}/surechembl_dump.pq')
     inchikeys_of_interest = surechem_df['InChIKey'].unique().tolist()
 
     pubchem_df = pd.read_csv(
-        f'{DATA_DIR}/CID-InChI-Key.gz', sep='\t', compression='gzip', names=['cid', 'inchi', 'inchikey']
+        f'{MAPPING_DIR}/CID-InChI-Key.gz', sep='\t', compression='gzip', names=['cid', 'inchi', 'inchikey']
     )
     pubchem_df = pubchem_df[pubchem_df['inchikey'].isin(inchikeys_of_interest)]  # 10129899 compounds
-    pubchem_df.to_parquet(f'{DATA_DIR}/surechembl_pubchem_map.pq.gzip', compression='gzip')
+    pubchem_df.to_parquet(f'{PROCESSED_DIR}/surechembl_pubchem_map.pq.gzip', compression='gzip')
 
     """ChEMBL ID to InChIKey mapping"""
-    conn = sqlite3.connect(f'{DATA_DIR}/chembl_32.db')
+    conn = sqlite3.connect(f'{RAW_DIR}/chembl_32.db')
 
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
     try:
@@ -100,7 +104,7 @@ def cross_references():
 
     chembl_df = pd.read_sql(_sql, con=conn)
     chembl_df = chembl_df[chembl_df['inchikey'].isin(inchikeys_of_interest)]
-    chembl_df.to_parquet(f'{DATA_DIR}/chembl.pq.gzip', compression='gzip')
+    chembl_df.to_parquet(f'{PROCESSED_DIR}/chembl.pq.gzip', compression='gzip')
 
 """Parallelization of compound fingerprint calucation"""
 
@@ -125,7 +129,7 @@ def _calculate_fingerprints(smiles: str):
 def get_fingerprints():
     pool = mp.Pool(10)  # We have 24 cores on our linux machine
 
-    surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    surechembl_df = pd.read_parquet(f'{RAW_DIR}/surechembl_dump.pq')
     logger.warning(f'Loading data')
     surechembl_df['year'] = surechembl_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
     logger.warning(f'Loading completed')
@@ -153,7 +157,7 @@ def get_fingerprints():
         smiles_to_fingerprint_dict[result[0]] = result[1]
     
     
-    with open(f'{DATA_DIR}/fingerprint.json', 'w') as f:
+    with open(f'{MAPPING_DIR}/fingerprint.json', 'w') as f:
         json.dump(smiles_to_fingerprint_dict, f, ensure_ascii=False, indent=2)
 
 
@@ -213,7 +217,7 @@ def _calcualte_props(smiles: str):
 def get_properties():
     pool = mp.Pool(10)  # We have 24 cores on our linux machine
 
-    surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
+    surechembl_df = pd.read_parquet(f'{RAW_DIR}/surechembl_dump.pq')
     logger.warning(f'Loading data')
     surechembl_df['year'] = surechembl_df['PUBLICATION_DATE'].progress_apply(lambda x: x.split('-')[0])
     logger.warning(f'Loading completed')
@@ -241,59 +245,9 @@ def get_properties():
         smiles_to_property_dict[result[0]] = result[1]
     
     
-    with open(f'{DATA_DIR}/properties.json', 'w') as f:
+    with open(f'{MAPPING_DIR}/properties.json', 'w') as f:
         json.dump(smiles_to_property_dict, f, ensure_ascii=False, indent=2)
 
-
-def get_scaffold():
-    """Get Murko scaffold for compounds in SureChEMBL."""
-    surechembl_df = pd.read_parquet(f'{DATA_DIR}/surechembl_dump.pq')
-
-    unique_compounds = set(surechembl_df.SMILES.unique())
-
-    if os.path.exists(f'{DATA_DIR}/scaffold_dump.json'):
-        scaffold_dict = json.load(open(f'{DATA_DIR}/scaffold_dump.json'))
-    else:
-        scaffold_dict = defaultdict(str)
-
-    c = 0
-    skipped_smiles = 0
-
-    # Remove compounds that have already been processed
-    unique_compounds = unique_compounds - set(scaffold_dict.keys())
-
-    for smiles in tqdm(unique_compounds):
-        if smiles in scaffold_dict:
-            continue
-
-        molecule = MolFromSmiles(smiles)
-        
-        if molecule is None:
-            scaffold_dict[smiles] = None
-            skipped_smiles += 1
-            continue
-        
-        try:
-            generic_scaffold_smiles = Chem.MolToSmiles(GetScaffoldForMol(molecule)) 
-            scaffold_dict[smiles] = generic_scaffold_smiles   
-        except Chem.rdchem.AtomValenceException:
-            scaffold_dict[smiles] = None
-            skipped_smiles += 1
-            continue      
-        
-        c += 1
-
-        if c == 50:
-            with open(f'{DATA_DIR}/scaffold_dump.json', 'w') as f:
-                json.dump(scaffold_dict, f, ensure_ascii=False, indent=2)   
-            c = 0
-
-    print(f'Skipped - {skipped_smiles}')
-
-    with open(f'{DATA_DIR}/scaffold_dump.json', 'w') as f:
-        json.dump(scaffold_dict, f, ensure_ascii=False, indent=2)
-    
-    return scaffold_dict
 
 """Venn diagram """
 
