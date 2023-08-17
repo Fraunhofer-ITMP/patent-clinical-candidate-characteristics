@@ -6,8 +6,6 @@ import multiprocessing as mp
 import json
 import sqlite3
 from collections import defaultdict
-from typing import Iterable
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -72,39 +70,40 @@ def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
     return c
 
 
-def cross_references():
+def cross_references(from_pubchem: bool = False, from_chembl: bool = False):
     """Get external references (pubchem and chembl ids) for surechembl compounds."""
 
     surechem_df = pd.read_parquet(f'{RAW_DIR}/surechembl_dump.pq')
     inchikeys_of_interest = surechem_df['InChIKey'].unique().tolist()
 
-    pubchem_df = pd.read_csv(
-        f'{MAPPING_DIR}/CID-InChI-Key.gz', sep='\t', compression='gzip', names=['cid', 'inchi', 'inchikey']
-    )
-    pubchem_df = pubchem_df[pubchem_df['inchikey'].isin(inchikeys_of_interest)]  # 10129899 compounds
-    pubchem_df.to_parquet(f'{PROCESSED_DIR}/surechembl_pubchem_map.pq.gzip', compression='gzip')
+    if from_pubchem:
+        pubchem_df = pd.read_csv(
+            f'{MAPPING_DIR}/CID-InChI-Key.gz', sep='\t', compression='gzip', names=['cid', 'inchi', 'inchikey']
+        )
+        pubchem_df = pubchem_df[pubchem_df['inchikey'].isin(inchikeys_of_interest)]  # 10129899 compounds
+        pubchem_df.to_parquet(f'{PROCESSED_DIR}/surechembl_pubchem_map.pq.gzip', compression='gzip')
 
     """ChEMBL ID to InChIKey mapping"""
-    conn = sqlite3.connect(f'{RAW_DIR}/chembl_32.db')
+    if from_chembl:
+        conn = sqlite3.connect(f'{RAW_DIR}/chembl_32.db')
 
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    try:
-        assert len(cursor.fetchall()) > 1
-    except AssertionError:
-        print('Incorrect database. Please download the database again.')
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        try:
+            assert len(cursor.fetchall()) > 1
+        except AssertionError:
+            print('Incorrect database. Please download the database again.')
 
-    _sql = """
-    SELECT
-        MOLECULE_DICTIONARY.chembl_id as chembl_id,
-        MOLECULE_DICTIONARY.max_phase as clinical_phase,
-        COMPOUND_STRUCTURES.STANDARD_INCHI_KEY as inchikey
-    FROM MOLECULE_DICTIONARY
-    JOIN COMPOUND_STRUCTURES ON MOLECULE_DICTIONARY.molregno = COMPOUND_STRUCTURES.molregno
-    """
+        _sql = """
+        SELECT
+            MOLECULE_DICTIONARY.chembl_id as chembl_id,
+            MOLECULE_DICTIONARY.max_phase as clinical_phase,
+            COMPOUND_STRUCTURES.STANDARD_INCHI_KEY as inchikey
+        FROM MOLECULE_DICTIONARY
+        JOIN COMPOUND_STRUCTURES ON MOLECULE_DICTIONARY.molregno = COMPOUND_STRUCTURES.molregno
+        """
 
-    chembl_df = pd.read_sql(_sql, con=conn)
-    chembl_df = chembl_df[chembl_df['inchikey'].isin(inchikeys_of_interest)]
-    chembl_df.to_parquet(f'{PROCESSED_DIR}/chembl.pq.gzip', compression='gzip')
+        chembl_df = pd.read_sql(_sql, con=conn)
+        chembl_df.to_parquet(f'{PROCESSED_DIR}/chembl.pq.gzip', compression='gzip')
 
 """Parallelization of compound fingerprint calucation"""
 
