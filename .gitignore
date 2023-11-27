@@ -166,3 +166,4 @@ data/*
 *.pq
 *.npy
 notebooks/*
+data_all/*
