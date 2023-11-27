@@ -37,35 +37,34 @@ logger = logging.getLogger(__name__)
 tqdm.pandas()
 
 
-def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
+def find_multipatent_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
     """Find compounds that have been patented in previous years."""
 
     if os.path.exists(f"{PROCESSED_DIR}/repeated_compound.tsv"):
         return pd.read_csv(f"{PROCESSED_DIR}/repeated_compound.tsv", sep="\t")
-
-    df = data_df.drop_duplicates(subset=["InChIKey", "year"], keep="first")
+    
+    if os.path.exists(f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip"):
+        df = pd.read_parquet(f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip")
+    else:
+        df = data_df.drop_duplicates(subset=["InChIKey", "year"], keep="first")
+        df.to_parquet(f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip", compression="gzip")
+    
     year_range = df["year"].unique().tolist()
     year_range.sort()
 
     # 2015 as the base year
     base_compounds = set(df[df["year"] == "2015"]["InChIKey"].unique().tolist())
 
-    count = [
-        {
-            "year": "2015",
-            "repuroposed_drug_count": 0,
-            "unique_compounds": len(base_compounds),
-        }
-    ]
+    count = []
 
-    for year1, year2 in tqdm(
+    for last_year, current_year in tqdm(
         zip(year_range, year_range[1:]), total=len(year_range) - 1
     ):
         previous_year_compound = set(
-            df[(df["year"] == str(year1))]["InChIKey"].unique().tolist()
+            df[(df["year"] == str(last_year))]["InChIKey"].unique().tolist()
         )
         current_year_compound = set(
-            df[(df["year"] == str(year2))]["InChIKey"].unique().tolist()
+            df[(df["year"] == str(current_year))]["InChIKey"].unique().tolist()
         )
 
         base_compounds = base_compounds.union(previous_year_compound)
@@ -75,8 +74,8 @@ def find_repurposed_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
 
         count.append(
             {
-                "year": year2,
-                "repuroposed_drug_count": len(common_cmps),
+                "year": current_year,
+                "patented_drug_count": len(common_cmps),
                 "unique_compounds": len(unique_cmps),
             }
         )
