@@ -17,7 +17,8 @@ ii) the awareness that reusing data from SureChEMBL requires a pre-filtering to 
 iii) by incorporating these compounds into the existing chemical space, we would expand our access to a broader and more diverse range of chemical entities.
 
 # Citation
-Publication is in review.
+
+Pre-print is now availabe at Bioarvix ![PreprintDOI:10.1101/2023.11.27.568822](http://img.shields.io/badge/DOI-10.1101/2023.11.27.568822-ddd17a.svg).
 
 
 
