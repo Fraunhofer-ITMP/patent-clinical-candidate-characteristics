@@ -18,7 +18,8 @@ iii) by incorporating these compounds into the existing chemical space, we would
 
 # Citation
 
-Pre-print is now availabe at Bioarvix ![PreprintDOI:10.1101/2023.11.27.568822](http://img.shields.io/badge/DOI-10.1101/2023.11.27.568822-ddd17a.svg).
+Pre-print is now available at [Bioarvix](https://doi.org/10.1101/2023.11.27.568822) ![PreprintDOI:10.1101/2023.11.27.568822](http://img.shields.io/badge/DOI-10.1101/2023.11.27.568822-ddd17a.svg).
+
 
 
 
