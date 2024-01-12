@@ -42,13 +42,16 @@ def find_multipatent_compounds(data_df: pd.DataFrame) -> pd.DataFrame:
 
     if os.path.exists(f"{PROCESSED_DIR}/repeated_compound.tsv"):
         return pd.read_csv(f"{PROCESSED_DIR}/repeated_compound.tsv", sep="\t")
-    
+
     if os.path.exists(f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip"):
         df = pd.read_parquet(f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip")
     else:
         df = data_df.drop_duplicates(subset=["InChIKey", "year"], keep="first")
-        df.to_parquet(f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip", compression="gzip")
-    
+        df.to_parquet(
+            f"{PROCESSED_DIR}/surechembl_unique_inchikey_dump.pq.gzip",
+            compression="gzip",
+        )
+
     year_range = df["year"].unique().tolist()
     year_range.sort()
 
@@ -370,8 +373,7 @@ def venn4(data, names=["A", "B", "C", "D"], **options):
         [82, 82, 190, 0.2],
     ]
     default_colors = [
-        [i[0] / 255.0, i[1] / 255.0, i[2] / 255.0, i[3]]
-        for i in default_colors
+        [i[0] / 255.0, i[1] / 255.0, i[2] / 255.0, i[3]] for i in default_colors
     ]
 
     if (data is None) or len(data) != 4:
@@ -390,7 +392,7 @@ def venn4(data, names=["A", "B", "C", "D"], **options):
     ax.set_ylim(bottom=0.0, top=1.0)
     ax.set_xlim(left=0.0, right=1.0)
 
-    fill_typ = options.get("fill", 'number')
+    fill_typ = options.get("fill", "number")
     labels = get_labels(data, fill=fill_typ)
 
     # body
@@ -445,5 +447,5 @@ def venn4(data, names=["A", "B", "C", "D"], **options):
     leg.get_frame().set_alpha(0.5)
 
     plt.tight_layout()
-    plt.savefig(f"{FIG_DIR}/figure_2.png", dpi=400)
+    plt.savefig(f"{FIG_DIR}/figure_2a.png", dpi=400)
     plt.show()

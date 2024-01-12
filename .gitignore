@@ -162,7 +162,9 @@ cython_debug/
 *.gz
 *.gzip
 *.DS_Store
-data/*
+data/raw/*
+data/processed/*
+data/mappings/*
 *.pq
 *.npy
 notebooks/*
